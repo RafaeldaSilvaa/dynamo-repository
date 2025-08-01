@@ -338,3 +338,40 @@ def test_get_with_invalid_keys():
     # Passar None ou string vazia
     assert DynamoRepository.get(CustomerModel, hash_key=None, range_key=None) is None
     assert DynamoRepository.get(CustomerModel, hash_key="", range_key=None) is None
+    
+def test_query_index_with_date_filter():
+    customer = create_customer(10)
+    customer.created_at = "2025-07-30T12:00:00Z"
+    DynamoRepository.insert(customer)
+
+    # Queremos buscar datas menores que "2025-08-01T00:00:00Z"
+    filter_cond = CustomerModel.created_at < "2025-08-01T00:00:00Z"
+
+    results = list(DynamoRepository.query_index(
+        CustomerModel,
+        "created_at_index",
+        hash_key_value=customer.tenant_id,
+        filter_condition=filter_cond
+    ))
+
+    assert any(r.customer_id == customer.customer_id for r in results)
+
+
+def test_query_with_partition_sort_and_date_filter():
+    customer = create_customer(1)
+    customer.created_at = "2025-07-31T13:00:00Z"
+    DynamoRepository.insert(customer)
+
+    hash_key = customer.tenant_id
+    range_cond = CustomerModel.customer_id == customer.customer_id
+    filter_cond = CustomerModel.created_at < "2025-08-01T00:00:00Z"
+
+    results = list(DynamoRepository.query(
+        model_cls=CustomerModel,
+        hash_key_value=hash_key,
+        range_key_condition=range_cond,
+        filter_condition=filter_cond
+    ))
+
+    assert any(r.customer_id == customer.customer_id for r in results)
+
