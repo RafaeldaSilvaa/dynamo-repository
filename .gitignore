@@ -1,0 +1,53 @@
+# Ignora arquivos de sistema e temporários
+.DS_Store
+.env
+.flaskenv
+.venv/
+__pycache__/
+*.pyc
+
+# Ignora pastas de cache do Python
+.eggs/
+*.egg-info/
+/build/
+/dist/
+
+# Ignora pastas de cache de ferramentas
+.mypy_cache/
+.pytest_cache/
+htmlcov/
+.nox/
+.tox/
+
+# Ignora dependências
+/venv
+/env
+/bin/
+/lib/
+/include/
+/local/
+
+# Ignora logs e bancos de dados
+*.log
+*.sqlite3
+
+# Ignora arquivos específicos do PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+.project
+.vscode/
+
+# Ignora arquivos de configuração do VS Code
+.vscode/
+*.code-workspace
+*.vs/
+.vs/
+.vscode/
+
+# Ignora arquivos gerados por Jupyter Notebook
+.ipynb_checkpoints/
+
+*volume
+*localstack

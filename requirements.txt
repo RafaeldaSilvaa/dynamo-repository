@@ -1,0 +1,5 @@
+pynamodb
+boto3
+faker
+pytest
+moto[all]
