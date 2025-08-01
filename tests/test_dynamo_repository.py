@@ -375,3 +375,19 @@ def test_query_with_partition_sort_and_date_filter():
 
     assert any(r.customer_id == customer.customer_id for r in results)
 
+def test_flexible_query_requires_hash_or_scan_flag():
+    with pytest.raises(ValueError):
+        list(DynamoRepository.flexible_query(CustomerModel))
+
+def test_flexible_query_scan_if_missing_hash():
+    customer = create_customer(300)
+    DynamoRepository.insert(customer)
+    cond = BeginsWith(Path("tenant_id"), Value("T"))
+
+    results = list(DynamoRepository.flexible_query(
+        CustomerModel,
+        range_key_condition=cond,
+        use_scan_if_missing_hash=True
+    ))
+
+    assert any(r.customer_id == customer.customer_id for r in results)
