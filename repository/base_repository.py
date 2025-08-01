@@ -75,28 +75,29 @@ class DynamoRepository(IDynamoRepository):
         """
         Atualiza um item existente na tabela com os dados da instância fornecida.
 
-        Busca o item atual na tabela, atualiza os campos e salva.
+        Evita sobrescrever chaves primárias e salva o item.
 
-        :param model_instance: Instância do modelo preenchida com dados atualizados.
-        :param hash_key_name: Nome do atributo da chave hash.
-        :param range_key_name: Nome do atributo da chave range, se houver.
-        :param consistent_read: Se True, leitura consistente.
-        :raises DoesNotExist: Se o item não existir para atualização.
+        :param model_instance: Instância com os dados atualizados.
+        :param hash_key_name: Nome do campo de chave hash.
+        :param range_key_name: Nome do campo de chave range, se existir.
+        :param consistent_read: Se True, faz leitura consistente.
         :return: Instância atualizada salva no DynamoDB.
         """
         model_cls = type(model_instance)
         hash_key = getattr(model_instance, hash_key_name)
         range_key = getattr(model_instance, range_key_name) if range_key_name else None
 
-        # Obtém item atual para atualizar
+        # Recupera o item existente
         if range_key is not None:
             existing = model_cls.get(hash_key, range_key, consistent_read=consistent_read)
         else:
             existing = model_cls.get(hash_key, consistent_read=consistent_read)
 
-        # Atualiza todos os atributos da instância existente com os novos valores
+        # Atualiza os atributos, exceto as chaves primárias
         for attr, value in model_instance.attribute_values.items():
-            setattr(existing, attr, value)
+            attr_def = model_cls._get_attributes().get(attr)
+            if attr_def and not attr_def.is_hash_key and not attr_def.is_range_key:
+                setattr(existing, attr, value)
 
         existing.save()
         return existing
