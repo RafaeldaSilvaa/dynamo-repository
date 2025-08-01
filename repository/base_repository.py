@@ -319,3 +319,63 @@ class DynamoRepository(IDynamoRepository):
         :return: Lista de ações para passar em update.
         """
         return [SetAction(Path(attr), value) for attr, value in updates.items()]
+
+    @staticmethod
+    def flexible_query(
+        model_cls: Type[PynamoModel],
+        hash_key_value: Optional[Any] = None,
+        range_key_condition: Optional[Condition] = None,
+        filter_condition: Optional[Condition] = None,
+        limit: Optional[int] = None,
+        scan_forward: bool = True,
+        consistent_read: bool = False,
+        use_scan_if_missing_hash: bool = False,
+        index_name: Optional[str] = None
+    ) -> Iterator[PynamoModel]:
+        """
+        Consulta flexível que unifica query normal, query com índice e fallback para scan.
+
+        :param model_cls: Classe do modelo Pynamo.
+        :param hash_key_value: Valor da chave de partição.
+        :param range_key_condition: Condição de sort key.
+        :param filter_condition: Filtro adicional.
+        :param limit: Limite de itens.
+        :param scan_forward: Ordenação crescente da sort key.
+        :param consistent_read: Se a leitura será consistente.
+        :param use_scan_if_missing_hash: Permite scan se não houver hash_key.
+        :param index_name: Nome do índice, se aplicável.
+        :raises ValueError: Parâmetros inválidos.
+        :return: Iterador com os resultados.
+        """
+        kwargs = {
+            "range_key_condition": range_key_condition,
+            "filter_condition": filter_condition,
+            "limit": limit,
+            "scan_index_forward": scan_forward,
+            "consistent_read": consistent_read,
+        }
+
+        if hash_key_value is not None:
+            if index_name:
+                return model_cls.query(
+                    hash_key_value,
+                    index_name=index_name,
+                    **kwargs
+                )
+            else:
+                return model_cls.query(
+                    hash_key_value,
+                    **kwargs
+                )
+        elif use_scan_if_missing_hash and range_key_condition is not None:
+            full_filter = range_key_condition & filter_condition if filter_condition else range_key_condition
+            scan_kwargs = {
+                "filter_condition": full_filter,
+                "limit": limit,
+                "consistent_read": consistent_read,
+            }
+            if index_name:
+                scan_kwargs["index_name"] = index_name
+            return model_cls.scan(**scan_kwargs)
+
+        raise ValueError("hash_key_value é obrigatório, exceto se use_scan_if_missing_hash=True e range_key_condition for fornecido.")
