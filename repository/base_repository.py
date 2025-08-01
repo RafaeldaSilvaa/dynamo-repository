@@ -1,22 +1,41 @@
 from typing import Type, Any, Optional, List, Dict, Union, Iterator, TypeVar
 from pynamodb.exceptions import DoesNotExist
 from pynamodb.pagination import ResultIterator
-from typing import Type
-from pynamodb.models import Model
+from pynamodb.models import Model as PynamoModel
 from pynamodb.expressions.update import SetAction
 from pynamodb.expressions.operand import Path
-from pynamodb.models import Model as PynamoModel
 from pynamodb.expressions.condition import Condition
 
-T = TypeVar("T", bound=PynamoModel)
+from repository.repository_interface import IDynamoRepository
 
-class DynamoRepository:
-    """Repositório genérico para operações DynamoDB com PynamoDB."""
+
+class DynamoRepository(IDynamoRepository):
+    """
+    Repositório genérico para operações com DynamoDB utilizando a biblioteca PynamoDB.
+
+    Esta classe oferece métodos estáticos para CRUD, consultas, escaneamentos e operações
+    mais avançadas como upsert e batch_get, abstraindo detalhes do acesso direto ao DynamoDB.
+
+    Utiliza generics para suportar qualquer modelo que estenda PynamoModel.
+
+    Exemplo básico de uso:
+        customer = CustomerModel(customer_id="C001", tenant_id="T1", ...)
+        DynamoRepository.insert(customer)
+        fetched = DynamoRepository.get(CustomerModel, "C001", "T1")
+    """
 
     @staticmethod
-    def get(model: Type[Model], hash_key: Any, range_key: Optional[Any] = None) -> Optional[Model]:
+    def get(model: Type[PynamoModel], hash_key: Any, range_key: Optional[Any] = None) -> Optional[PynamoModel]:
+        """
+        Obtém um item pelo hash key e opcionalmente range key.
+
+        :param model: Classe do modelo PynamoDB.
+        :param hash_key: Valor da chave hash (partition key).
+        :param range_key: Valor da chave de range (sort key), se aplicável.
+        :return: Instância do modelo se encontrada, None caso contrário.
+        """
         if not hash_key:
-            # Pode lançar ValueError, ou retornar None
+            # Caso hash_key seja None ou vazio, retorna None diretamente.
             return None
         try:
             return model.get(hash_key, range_key) if range_key else model.get(hash_key)
@@ -24,45 +43,58 @@ class DynamoRepository:
             return None
 
     @staticmethod
-    def exists(model: Type[Model], hash_key: Any, range_key: Optional[Any] = None) -> bool:
-        """Verifica se item existe na tabela."""
+    def exists(model: Type[PynamoModel], hash_key: Any, range_key: Optional[Any] = None) -> bool:
+        """
+        Verifica se um item existe na tabela.
+
+        :param model: Classe do modelo PynamoDB.
+        :param hash_key: Valor da chave hash.
+        :param range_key: Valor da chave range (opcional).
+        :return: True se o item existir, False caso contrário.
+        """
         return DynamoRepository.get(model, hash_key, range_key) is not None
 
     @staticmethod
-    def insert(model_instance: Model) -> Model:
+    def insert(model_instance: PynamoModel) -> PynamoModel:
         """
-        Inserts a new item into the table.
+        Insere um novo item na tabela.
+
+        :param model_instance: Instância do modelo a ser inserida.
+        :return: A própria instância inserida.
         """
         model_instance.save()
         return model_instance
 
     @staticmethod
     def update(
-            model_instance: Model,
-            hash_key_name: str,
-            range_key_name: Optional[str] = None,
-            consistent_read: bool = False
-    ) -> Model:
+        model_instance: PynamoModel,
+        hash_key_name: str,
+        range_key_name: Optional[str] = None,
+        consistent_read: bool = False
+    ) -> PynamoModel:
         """
-        Atualiza um item existente na tabela DynamoDB.
+        Atualiza um item existente na tabela com os dados da instância fornecida.
 
-        :param model_instance: Instância do modelo PynamoDB preenchida.
-        :param hash_key_name: Nome do atributo que é a chave hash.
-        :param range_key_name: Nome do atributo que é a chave de range (opcional).
-        :return: Instância atualizada do modelo.
-        :raises DoesNotExist: Se o item não existir na tabela.
+        Busca o item atual na tabela, atualiza os campos e salva.
+
+        :param model_instance: Instância do modelo preenchida com dados atualizados.
+        :param hash_key_name: Nome do atributo da chave hash.
+        :param range_key_name: Nome do atributo da chave range, se houver.
+        :param consistent_read: Se True, leitura consistente.
+        :raises DoesNotExist: Se o item não existir para atualização.
+        :return: Instância atualizada salva no DynamoDB.
         """
         model_cls = type(model_instance)
         hash_key = getattr(model_instance, hash_key_name)
         range_key = getattr(model_instance, range_key_name) if range_key_name else None
 
-        # Busca o item existente
+        # Obtém item atual para atualizar
         if range_key is not None:
             existing = model_cls.get(hash_key, range_key, consistent_read=consistent_read)
         else:
             existing = model_cls.get(hash_key, consistent_read=consistent_read)
 
-        # Atualiza os atributos do item existente com os do model_instance
+        # Atualiza todos os atributos da instância existente com os novos valores
         for attr, value in model_instance.attribute_values.items():
             setattr(existing, attr, value)
 
@@ -71,11 +103,22 @@ class DynamoRepository:
 
     @staticmethod
     def upsert(
-            model_instance: Model,
-            hash_key_name: str,
-            range_key_name: Optional[str] = None,
-            consistent_read: bool = False
-    ) -> Model:
+        model_instance: PynamoModel,
+        hash_key_name: str,
+        range_key_name: Optional[str] = None,
+        consistent_read: bool = False
+    ) -> PynamoModel:
+        """
+        Insere ou atualiza um item (upsert).
+
+        Tenta obter o item; se existir, atualiza, caso contrário insere novo.
+
+        :param model_instance: Instância do modelo.
+        :param hash_key_name: Nome da chave hash.
+        :param range_key_name: Nome da chave range (opcional).
+        :param consistent_read: Leitura consistente se True.
+        :return: Instância inserida ou atualizada.
+        """
         model_cls = type(model_instance)
         hash_key = getattr(model_instance, hash_key_name)
         range_key = getattr(model_instance, range_key_name) if range_key_name else None
@@ -90,37 +133,45 @@ class DynamoRepository:
             return DynamoRepository.insert(model_instance)
 
     @staticmethod
-    def delete(model: Type[Model], hash_key: Any, range_key: Optional[Any] = None) -> None:
-        """Remove item da tabela."""
-        model(hash_key, range_key).delete() if range_key else model(hash_key).delete()
+    def delete(model: Type[PynamoModel], hash_key: Any, range_key: Optional[Any] = None) -> None:
+        """
+        Remove um item da tabela pelo hash e range key.
+
+        :param model: Classe do modelo.
+        :param hash_key: Valor da chave hash.
+        :param range_key: Valor da chave range (opcional).
+        """
+        if range_key is not None:
+            model(hash_key, range_key).delete()
+        else:
+            model(hash_key).delete()
 
     @staticmethod
     def query(
-            model_cls: Type[Model],
-            hash_key_value: Optional[Any] = None,
-            range_key_condition: Optional[Condition] = None,
-            filter_condition: Optional[Condition] = None,
-            limit: Optional[int] = None,
-            scan_forward: bool = True,
-            use_scan_if_missing_hash: bool = False,
-            consistent_read: bool = False
-    ) -> Iterator[Model]:
+        model_cls: Type[PynamoModel],
+        hash_key_value: Optional[Any] = None,
+        range_key_condition: Optional[Condition] = None,
+        filter_condition: Optional[Condition] = None,
+        limit: Optional[int] = None,
+        scan_forward: bool = True,
+        use_scan_if_missing_hash: bool = False,
+        consistent_read: bool = False
+    ) -> Iterator[PynamoModel]:
         """
-        Consulta por:
-        - Partition key apenas
-        - Partition + Sort key
-        - Apenas Sort key (usando scan se habilitado)
+        Realiza query por partition key e opcionalmente sort key, ou scan com condição de range key.
 
         :param model_cls: Classe do modelo.
-        :param hash_key_value: Valor da partition key.
+        :param hash_key_value: Valor da chave hash.
         :param range_key_condition: Condição sobre a sort key.
-        :param filter_condition: Filtros adicionais (em colunas secundárias).
-        :param limit: Número máximo de resultados.
-        :param scan_forward: True para ordem crescente da sort key.
-        :param use_scan_if_missing_hash: Permite scan caso hash key esteja ausente.
+        :param filter_condition: Filtros adicionais.
+        :param limit: Limite de itens retornados.
+        :param scan_forward: Ordenação ascendente da sort key.
+        :param use_scan_if_missing_hash: Se True, permite scan se hash_key_value não fornecido.
+        :param consistent_read: Se True, leitura consistente.
+        :raises ValueError: Se parâmetros inválidos para a consulta.
+        :return: Iterador dos itens encontrados.
         """
         if hash_key_value is not None:
-            # 1. Apenas Hash ou 2. Hash + Range
             return model_cls.query(
                 hash_key_value,
                 range_key_condition=range_key_condition,
@@ -130,7 +181,6 @@ class DynamoRepository:
                 consistent_read=consistent_read
             )
         elif use_scan_if_missing_hash and range_key_condition is not None:
-            # 3. Apenas Range Key via scan
             full_filter = (
                 range_key_condition & filter_condition
                 if filter_condition else range_key_condition
@@ -147,30 +197,32 @@ class DynamoRepository:
 
     @staticmethod
     def query_index(
-            model_cls: Type[Model],
-            index_name: str,
-            hash_key_value: Optional[Any] = None,
-            range_key_condition: Optional[Condition] = None,
-            filter_condition: Optional[Condition] = None,
-            limit: Optional[int] = None,
-            scan_forward: bool = True,
-            use_scan_if_missing_hash: bool = False,
-            consistent_read: bool = False
-    ) -> Iterator[Model]:
+        model_cls: Type[PynamoModel],
+        index_name: str,
+        hash_key_value: Optional[Any] = None,
+        range_key_condition: Optional[Condition] = None,
+        filter_condition: Optional[Condition] = None,
+        limit: Optional[int] = None,
+        scan_forward: bool = True,
+        use_scan_if_missing_hash: bool = False,
+        consistent_read: bool = False
+    ) -> Iterator[PynamoModel]:
         """
-        Consulta flexível usando índice (GSI ou LSI).
+        Consulta usando índice secundário global ou local.
 
         :param model_cls: Classe do modelo.
-        :param index_name: Nome do índice definido no modelo.
-        :param hash_key_value: Valor da partition key do índice.
-        :param range_key_condition: Condição da sort key do índice.
+        :param index_name: Nome do índice.
+        :param hash_key_value: Valor da chave hash do índice.
+        :param range_key_condition: Condição da chave sort do índice.
         :param filter_condition: Filtros adicionais.
         :param limit: Limite de resultados.
-        :param scan_forward: Ordem crescente da sort key.
-        :param use_scan_if_missing_hash: Permite scan se a hash key não for fornecida.
+        :param scan_forward: Ordenação da chave sort.
+        :param use_scan_if_missing_hash: Permite scan se hash_key_value não fornecido.
+        :param consistent_read: Leitura consistente.
+        :raises ValueError: Se parâmetros inválidos.
+        :return: Iterador dos itens encontrados.
         """
         if hash_key_value is not None:
-            # 1. Hash key apenas, ou 2. Hash + Range
             return model_cls.query(
                 hash_key_value,
                 index_name=index_name,
@@ -181,7 +233,6 @@ class DynamoRepository:
                 consistent_read=consistent_read
             )
         elif use_scan_if_missing_hash and range_key_condition is not None:
-            # 3. Apenas sort key do índice via scan
             full_filter = (
                 range_key_condition & filter_condition
                 if filter_condition else range_key_condition
@@ -199,23 +250,40 @@ class DynamoRepository:
 
     @staticmethod
     def scan(
-        model: Type[Model],
+        model: Type[PynamoModel],
         filter_condition: Optional[Condition] = None,
         limit: Optional[int] = None,
         consistent_read: bool = False
-    ) -> Iterator[Model]:
-        """Faz scan completo, com filtro opcional."""
+    ) -> Iterator[PynamoModel]:
+        """
+        Escaneia toda a tabela, opcionalmente filtrando os resultados.
+
+        :param model: Classe do modelo.
+        :param filter_condition: Condição para filtrar resultados.
+        :param limit: Limite de itens retornados.
+        :param consistent_read: Se True, leitura consistente.
+        :return: Iterador dos itens encontrados.
+        """
         return model.scan(filter_condition=filter_condition, limit=limit, consistent_read=consistent_read)
 
     @staticmethod
     def scan_paginated(
-        model: Type[Model],
+        model: Type[PynamoModel],
         filter_condition: Optional[Condition] = None,
         page_size: int = 10,
         limit: Optional[int] = None,
         consistent_read: bool = False
-    ) -> ResultIterator[Model]:
-        """Faz scan paginado."""
+    ) -> ResultIterator[PynamoModel]:
+        """
+        Escaneia a tabela paginando resultados para controlar memória e latência.
+
+        :param model: Classe do modelo.
+        :param filter_condition: Condição para filtrar resultados.
+        :param page_size: Tamanho da página (itens por página).
+        :param limit: Limite total de itens a retornar.
+        :param consistent_read: Leitura consistente.
+        :return: ResultIterator para iteração paginada.
+        """
         return model.scan(
             filter_condition=filter_condition,
             limit=limit,
@@ -224,11 +292,29 @@ class DynamoRepository:
         )
 
     @staticmethod
-    def batch_get(model: Type[Model], keys: List[Union[Any, tuple]], consistent_read: bool=True) -> Iterator[Model]:
-        """Busca múltiplos itens por lote."""
+    def batch_get(
+        model: Type[PynamoModel],
+        keys: List[Union[Any, tuple]],
+        consistent_read: bool = True
+    ) -> Iterator[PynamoModel]:
+        """
+        Busca múltiplos itens em lote pelo conjunto de chaves.
+
+        :param model: Classe do modelo.
+        :param keys: Lista de chaves (tuplas hash e range, ou apenas hash).
+        :param consistent_read: Leitura consistente.
+        :return: Iterador com os itens encontrados.
+        """
         return model.batch_get(keys, consistent_read=consistent_read)
 
     @staticmethod
     def build_actions(updates: Dict[str, Any]) -> List[SetAction]:
-        """Gera ações de atualização para o método update()."""
+        """
+        Gera uma lista de ações para atualização parcial via update.
+
+        Cada ação corresponde a um atributo e seu novo valor, usando SetAction.
+
+        :param updates: Dicionário atributo -> novo valor.
+        :return: Lista de ações para passar em update.
+        """
         return [SetAction(Path(attr), value) for attr, value in updates.items()]
