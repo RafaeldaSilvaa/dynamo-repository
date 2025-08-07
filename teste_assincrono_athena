@@ -1,0 +1,140 @@
+import asyncio
+import aioboto3
+import logging
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator, List, Dict, Any, Optional, Literal, Final
+
+# Exceções e contrato da arquitetura limpa
+class AthenaQueryFailed(Exception):
+    pass
+
+class AthenaRepository:
+    async def query(self, query_string: str) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+logger = logging.getLogger(__name__)
+
+
+class AthenaAioboto3Adapter(AthenaRepository):
+    """
+    Adaptador assíncrono para consultas ao Amazon Athena usando aioboto3.
+    """
+    def __init__(
+        self,
+        database_name: str,
+        s3_output_location: str,
+        region_name: str = 'us-east-1',
+        polling_interval: int = 5,
+        query_timeout: int = 300  # Timeout em segundos (default: 5 min)
+    ) -> None:
+        self._database_name: Final[str] = database_name
+        self._s3_output_location: Final[str] = s3_output_location
+        self._region_name: Final[str] = region_name
+        self._polling_interval: Final[int] = polling_interval
+        self._query_timeout: Final[int] = query_timeout
+        self._session: Final[aioboto3.Session] = aioboto3.Session()
+
+    @asynccontextmanager
+    async def _get_client(self) -> AsyncGenerator[Any, None]:
+        async with self._session.client("athena", region_name=self._region_name) as client:
+            yield client
+
+    async def _start_query(self, client: Any, query_string: str) -> str:
+        response: Dict[str, Any] = await client.start_query_execution(
+            QueryString=query_string,
+            QueryExecutionContext={'Database': self._database_name},
+            ResultConfiguration={'OutputLocation': self._s3_output_location}
+        )
+        return response['QueryExecutionId']
+
+    async def _wait_for_query(self, client: Any, query_execution_id: str) -> Literal['SUCCEEDED']:
+        retry_count: int = 0
+        while True:
+            response: Dict[str, Any] = await client.get_query_execution(QueryExecutionId=query_execution_id)
+            status: str = response['QueryExecution']['Status']['State']
+            logger.info(f"[Athena] Status da consulta {query_execution_id}: {status}")
+
+            if status == 'SUCCEEDED':
+                return status
+            if status in ['FAILED', 'CANCELLED']:
+                reason: str = response['QueryExecution']['Status'].get('StateChangeReason', 'Desconhecido')
+                raise AthenaQueryFailed(f"Consulta {query_execution_id} falhou. Motivo: {reason}")
+
+            wait_time: int = min(self._polling_interval * (2 ** retry_count), 60)
+            await asyncio.sleep(wait_time)
+            retry_count += 1
+
+    async def _get_query_results(self, client: Any, query_execution_id: str) -> List[Dict[str, Any]]:
+        results_list: List[Dict[str, Any]] = []
+        next_token: Optional[str] = None
+        column_names: Optional[List[str]] = None
+
+        while True:
+            response: Dict[str, Any] = await client.get_query_results(
+                QueryExecutionId=query_execution_id,
+                NextToken=next_token
+            )
+
+            if column_names is None:
+                column_info: List[Dict[str, Any]] = response['ResultSet']['ResultSetMetadata']['ColumnInfo']
+                column_names = [col['Name'] for col in column_info]
+
+            raw_rows: List[Dict[str, Any]] = response['ResultSet'].get('Rows', [])
+            for row in raw_rows[1:] if not next_token else raw_rows:
+                data = row.get('Data', [])
+                values: List[Any] = [col.get('VarCharValue', None) for col in data]
+                results_list.append(dict(zip(column_names, values)))
+
+            next_token = response.get('NextToken')
+            if not next_token:
+                break
+
+        return results_list
+
+    async def query(self, query_string: str) -> List[Dict[str, Any]]:
+        async with self._get_client() as client:
+            try:
+                query_id: str = await self._start_query(client, query_string)
+                await asyncio.wait_for(self._wait_for_query(client, query_id), timeout=self._query_timeout)
+                return await self._get_query_results(client, query_id)
+            except asyncio.TimeoutError:
+                logger.error(f"[Athena] Timeout atingido na execução da query: {query_string}")
+                raise AthenaQueryFailed("Tempo limite atingido para execução da consulta.")
+            except AthenaQueryFailed:
+                raise
+            except Exception as e:
+                logger.exception(f"[Athena] Erro inesperado ao executar consulta: {e}")
+                raise
+
+# --- Exemplo de uso ---
+async def main() -> None:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+    DATABASE_NAME = "sampledb"
+    S3_OUTPUT_LOCATION = "s3://seu-bucket-de-saida/athena-consultas/"
+    REGION_NAME = "us-east-1"
+
+    athena_repo = AthenaAioboto3Adapter(
+        database_name=DATABASE_NAME,
+        s3_output_location=S3_OUTPUT_LOCATION,
+        region_name=REGION_NAME
+    )
+
+    consulta: str = "SELECT * FROM elb_logs LIMIT 5;"
+    logger.info(f"Iniciando consulta assíncrona: {consulta}")
+
+    try:
+        resultados: List[Dict[str, Any]] = await athena_repo.query(consulta)
+        if resultados:
+            logger.info("Consulta bem-sucedida! Resultados:")
+            for linha in resultados:
+                print(linha)
+        else:
+            logger.warning("A consulta retornou 0 resultados.")
+    except AthenaQueryFailed as e:
+        logger.error(f"A consulta falhou com uma exceção controlada: {e}")
+    except Exception as e:
+        logger.error(f"Ocorreu um erro inesperado: {e}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
